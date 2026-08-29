@@ -1,0 +1,56 @@
+<?php
+// Copy to ask-cv.php on the server. The API key is read ONLY from the server
+// environment — never hardcode it in this file.
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit; }
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') { http_response_code(405); echo json_encode(['error' => 'POST only']); exit; }
+
+$apiKey = getenv('ANTHROPIC_API_KEY') ?: '';
+if (strpos($apiKey, 'sk-ant-') !== 0) {
+    http_response_code(500);
+    echo json_encode(['error' => 'ANTHROPIC_API_KEY is not set in the server environment']);
+    exit;
+}
+
+$body = json_decode(file_get_contents('php://input'), true);
+$system = $body['system'] ?? '';
+$messages = $body['messages'] ?? [];
+if (!$system || !$messages) { http_response_code(400); echo json_encode(['error' => 'missing system/messages']); exit; }
+
+$payload = json_encode([
+    'model' => 'claude-haiku-4-5',
+    'max_tokens' => 400,
+    'system' => $system,
+    'messages' => $messages,
+]);
+
+$ch = curl_init('https://api.anthropic.com/v1/messages');
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => $payload,
+    CURLOPT_HTTPHEADER => [
+        'Content-Type: application/json',
+        'x-api-key: ' . $apiKey,
+        'anthropic-version: 2023-06-01',
+    ],
+]);
+$caFile = getenv('ANTHROPIC_CA_FILE') ?: '';
+if ($caFile !== '' && is_file($caFile)) { curl_setopt($ch, CURLOPT_CAINFO, $caFile); }
+
+$resp = curl_exec($ch);
+$err = curl_error($ch);
+$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($err) { http_response_code(502); echo json_encode(['error' => 'curl_error: ' . $err]); exit; }
+if ($status !== 200) { http_response_code($status); echo json_encode(['error' => 'http_' . $status, 'raw' => $resp]); exit; }
+
+$data = json_decode($resp, true);
+$text = $data['content'][0]['text'] ?? null;
+if (!$text) { http_response_code(500); echo json_encode(['error' => 'no text in response', 'raw' => $data]); exit; }
+
+echo json_encode(['text' => $text]);
